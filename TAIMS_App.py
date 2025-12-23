@@ -1,98 +1,198 @@
 import streamlit as st
 import os
+import json
+import uuid
 from dotenv import load_dotenv
 import google.generativeai as genai
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 # --- 1. CẤU HÌNH TRANG ---
 st.set_page_config(page_title="TAIMS", page_icon="🎯", layout="wide")
 
-# --- 2. KẾT NỐI & KIỂM TRA MODEL ---
+# --- 2. CẤU HÌNH NHÂN CÁCH AI ---
+TAIMS_INSTRUCTION = """
+Bạn là TAIMS - Trợ lý AI chuyên về Quản lý Thời gian và Hiệu suất (Time & Performance Management).
+
+Nhiệm vụ cốt lõi:
+1. Biến mục tiêu mơ hồ thành Kế hoạch hành động (Action Plan) cụ thể.
+2. Chia nhỏ các đầu việc lớn (Big Goals) thành các bước nhỏ dễ thực hiện (Micro-tasks).
+3. Giữ vai trò một người đồng hành tỉnh táo, logic và thực tế.
+
+Nguyên tắc giao tiếp:
+- Tên của bạn là TAIMS.
+- Không nói đạo lý sáo rỗng. Tập trung vào giải pháp "làm thế nào" (How-to).
+- Trả lời ngắn gọn, súc tích, sử dụng gạch đầu dòng (bullet points) để dễ đọc.
+- Nếu người dùng đưa ra mục tiêu phi thực tế, hãy phản biện nhẹ nhàng và đề xuất hướng đi khả thi hơn.
+- Luôn hỏi ngược lại để làm rõ vấn đề nếu thông tin chưa đủ.
+
+Tuyệt đối không tự nhận là con người. Bạn là một công cụ hỗ trợ tư duy tối ưu.
+"""
+
+# --- 3. KẾT NỐI API KEY ---
 load_dotenv()
 api_key = os.getenv("GEMINI_API_KEY")
 
-st.title("TAIMS 🎯 - Phiên bản Sửa Lỗi")
-
-# Kiểm tra Key
 if not api_key:
-    st.error("❌ Chưa tìm thấy API Key trong file .env")
-    st.stop()
+    if "GEMINI_API_KEY" in st.secrets:
+        api_key = st.secrets["GEMINI_API_KEY"]
+    else:
+        st.error("❌ Thiếu Gemini API Key.")
+        st.stop()
 
-# Cấu hình AI
 try:
     genai.configure(api_key=api_key)
 except Exception as e:
-    st.error(f"❌ Lỗi cấu hình Key: {e}")
+    st.error(f"Lỗi Key: {e}")
     st.stop()
 
-# --- 3. TỰ ĐỘNG TÌM MODEL (DEBUG) ---
-# Phần này giúp Thomas biết chính xác Key của mình dùng được model nào
-with st.sidebar:
-    st.header("🔧 Thông tin Kỹ thuật")
-    st.write("Đang kiểm tra các Model khả dụng...")
+
+# --- 4. KẾT NỐI FIREBASE ---
+@st.cache_resource
+def init_connection():
     try:
-        available_models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
+        if firebase_admin._apps:
+            return firestore.client()
 
-        if available_models:
-            st.success(f"Tìm thấy {len(available_models)} model!")
-            # Cho phép chọn model để tránh lỗi 404
-            selected_model = st.selectbox("Chọn Model:", available_models, index=0)
-        else:
-            st.error("Không tìm thấy Model nào hỗ trợ tạo nội dung.")
-            st.stop()
+        if os.path.exists("service_account.json"):
+            cred = credentials.Certificate("service_account.json")
+            firebase_admin.initialize_app(cred)
+            return firestore.client()
 
+        if "FIREBASE" in st.secrets:
+            key_content = st.secrets["FIREBASE"]["credentials_json"]
+            key_dict = json.loads(key_content, strict=False)
+            cred = credentials.Certificate(key_dict)
+            firebase_admin.initialize_app(cred)
+            return firestore.client()
+        return None
     except Exception as e:
-        st.error(f"Lỗi khi liệt kê model: {e}")
-        selected_model = "models/gemini-1.5-flash"  # Fallback
+        return None
 
-# --- 4. KHỞI TẠO BỘ NHỚ (SESSION STATE) ---
-# Đây là đoạn bạn đã phát hiện lỗi, tôi đã sửa lại đúng cú pháp
-if "tasks" not in st.session_state:
-    st.session_state.tasks = []  # ✅ ĐÃ SỬA: Gán bằng danh sách rỗng
+
+db = init_connection()
+
+# --- 5. KHỞI TẠO SESSION ID ---
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# --- 5. GIAO DIỆN CHÍNH ---
-st.caption(f"Đang sử dụng bộ não: `{selected_model}`")
+# --- THANH BÊN (SIDEBAR) ---
+with st.sidebar:
+    st.header("🧠 TAIMS System")
+    st.caption(f"ID Phiên: {st.session_state.session_id[:8]}...")
 
-# Hiển thị lịch sử chat
-for message in st.session_state.chat_history:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+    if db:
+        st.success("✅ Database: Online")
+    else:
+        st.warning("⚠️ Database: Offline")
 
-# Ô nhập liệu
-user_input = st.chat_input("Nhập mục tiêu của bạn (Ví dụ: Học tiếng Pháp trong 2 tháng)...")
+    if st.button("🗑️ Reset & New Session"):
+        st.session_state.chat_history = []
+        st.session_state.session_id = str(uuid.uuid4())
+        st.rerun()
+
+    st.divider()
+
+    # --- NHẬT KÝ RIÊNG TƯ ---
+    st.subheader("🗂️ Nhật ký phiên này")
+    if db:
+        try:
+            docs = db.collection("chat_logs") \
+                .where("session_id", "==", st.session_state.session_id) \
+                .where("role", "==", "user") \
+                .order_by("timestamp", direction=firestore.Query.DESCENDING) \
+                .limit(10) \
+                .stream()
+
+            found_logs = False
+            for doc in docs:
+                found_logs = True
+                data = doc.to_dict()
+                content = data.get("content", "")
+                preview = (content[:40] + '...') if len(content) > 40 else content
+                st.caption(f"📝 {preview}")
+
+            if not found_logs:
+                st.caption("(Trống)")
+
+        except Exception as e:
+            st.caption("Đang đồng bộ...")
+    else:
+        st.caption("Kết nối DB để xem lịch sử.")
+
+    st.divider()
+
+    try:
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        default_idx = models.index("models/gemini-1.5-flash") if "models/gemini-1.5-flash" in models else 0
+        model_name = st.selectbox("Model:", models, index=default_idx)
+    except:
+        model_name = "models/gemini-1.5-flash"
+
+# --- MAIN PAGE ---
+st.title("TAIMS 🎯")
+st.caption("Target Action Integrated Management System")
+
+for msg in st.session_state.chat_history:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+# Xử lý Chat - CÂU MỜI GỌI ĐÃ ĐƯỢC CẬP NHẬT
+user_input = st.chat_input("Cùng TAIMS thiết kế lộ trình của riêng bạn...")
 
 if user_input:
-    # 1. Hiện câu hỏi của user
+    # 1. User
     st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # 2. AI xử lý
+    if db:
+        try:
+            db.collection("chat_logs").add({
+                "session_id": st.session_state.session_id,
+                "role": "user",
+                "content": user_input,
+                "timestamp": firestore.SERVER_TIMESTAMP
+            })
+        except:
+            pass
+
+    # 2. AI
+    gemini_history = []
+    for msg in st.session_state.chat_history:
+        role = "model" if msg["role"] == "assistant" else "user"
+        gemini_history.append({"role": role, "parts": [msg["content"]]})
+
     with st.chat_message("assistant"):
-        with st.spinner("Thomas đợi chút, AI đang suy nghĩ..."):
+        with st.spinner("TAIMS đang thiết kế..."):
             try:
-                # Khởi tạo model từ cái tên đã chọn ở Sidebar
-                model = genai.GenerativeModel(selected_model)
+                model = genai.GenerativeModel(
+                    model_name=model_name,
+                    system_instruction=TAIMS_INSTRUCTION
+                )
 
-                # Gửi lệnh
-                response = model.generate_content(
-                    f"Hãy đóng vai trợ lý TAIMS. Giúp tôi chia nhỏ mục tiêu này thành 3 bước cụ thể kèm thời gian: {user_input}")
-                ai_reply = response.text
+                chat = model.start_chat(history=gemini_history)
+                response = chat.send_message(user_input)
+                reply = response.text
 
-                # Hiện câu trả lời
-                st.markdown(ai_reply)
+                st.markdown(reply)
 
-                # Lưu vào lịch sử
-                st.session_state.chat_history.append({"role": "assistant", "content": ai_reply})
+                st.session_state.chat_history.append({"role": "assistant", "content": reply})
 
-                # (Tạm thời giả lập tasks để test lỗi session_state)
-                st.session_state.tasks = ["Đã nhận kế hoạch từ AI"]
-
+                if db:
+                    try:
+                        db.collection("chat_logs").add({
+                            "session_id": st.session_state.session_id,
+                            "role": "assistant",
+                            "content": reply,
+                            "timestamp": firestore.SERVER_TIMESTAMP
+                        })
+                    except:
+                        pass
             except Exception as e:
-                st.error(f"❌ Vẫn còn lỗi: {e}")
-                st.info("Mẹo: Hãy thử chọn Model khác ở thanh bên trái (Sidebar)!")
+                st.error(f"Lỗi hệ thống: {e}")
+
+    st.rerun()
