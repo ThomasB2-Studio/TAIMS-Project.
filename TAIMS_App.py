@@ -75,11 +75,10 @@ def load_user_sessions(uid):
         docs = db.collection("sessions").where("uid", "==", uid).order_by("last_updated", direction=firestore.Query.DESCENDING).stream()
         return [{"id": doc.id, **doc.to_dict()} for doc in docs]
     except Exception as e:
-        # Nếu thiếu Index Session -> Báo lỗi bên Sidebar
         if "requires an index" in str(e):
             try:
                 link = str(e).split("https://")[1].split(" ")[0]
-                st.sidebar.error("⚠️ Thiếu Index 1 (Session)")
+                st.sidebar.error("⚠️ Thiếu Index 1")
                 st.sidebar.link_button("👉 Tạo Index 1", f"https://{link}")
             except: pass
         return []
@@ -90,7 +89,6 @@ def load_chat_history(session_id):
         docs = db.collection("chat_logs").where("session_id", "==", session_id).order_by("timestamp", direction=firestore.Query.ASCENDING).stream()
         return [{"role": doc.to_dict()["role"], "content": doc.to_dict()["content"]} for doc in docs]
     except Exception as e:
-        # Nếu thiếu Index Chat -> Báo lỗi trực tiếp
         if "requires an index" in str(e):
             st.error("⚠️ Thiếu Index 2 (Chat Logs)")
             try:
@@ -112,13 +110,27 @@ def sign_up(email, password):
         return requests.post(url, json={"email": email, "password": password, "returnSecureToken": True}).json()
     except: return {"error": "Lỗi kết nối"}
 
-# --- 6. GIAO DIỆN ---
+# --- 6. HÀM TÌM MODEL TỰ ĐỘNG (FIX LỖI 404) ---
+def get_best_model():
+    """Tự động tìm model tốt nhất có sẵn"""
+    try:
+        # Lấy danh sách model mà Google cho phép dùng
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                # Ưu tiên Flash nếu có
+                if 'flash' in m.name: return m.name
+        # Nếu không có Flash, lấy đại cái đầu tiên
+        return "gemini-pro"
+    except:
+        return "gemini-pro" # Fallback cuối cùng
+
+# --- 7. GIAO DIỆN ---
 if "user_info" not in st.session_state: st.session_state.user_info = None
 if "current_session_id" not in st.session_state: st.session_state.current_session_id = str(uuid.uuid4())
 if "chat_history" not in st.session_state: st.session_state.chat_history = []
 
 if not st.session_state.user_info:
-    # MÀN HÌNH LOGIN
+    # LOGIN SCREEN
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
         st.title("TAIMS 🎯")
@@ -136,7 +148,7 @@ if not st.session_state.user_info:
                 if "localId" in resp: st.session_state.user_info = {"uid": resp["localId"], "email": resp["email"]}; st.success("OK"); st.rerun()
                 else: st.error("Lỗi đăng ký")
 else:
-    # MÀN HÌNH CHÍNH
+    # MAIN APP
     uid = st.session_state.user_info["uid"]
     
     with st.sidebar:
@@ -153,7 +165,6 @@ else:
 
     st.title("TAIMS 🎯")
 
-    # Load history nếu F5
     if not st.session_state.chat_history and db:
         st.session_state.chat_history = load_chat_history(st.session_state.current_session_id)
 
@@ -161,42 +172,29 @@ else:
         with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
     if prompt := st.chat_input("Cùng TAIMS thiết kế lộ trình..."):
-        # 1. Hiện User & Lưu
         st.session_state.chat_history.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
         save_message(uid, st.session_state.current_session_id, "user", prompt)
 
-        # 2. AI Xử lý
         with st.chat_message("assistant"):
             with st.spinner("..."):
                 try:
-                    # Chuẩn bị context
+                    # FIX: Tự động tìm model
+                    model_name = get_best_model()
+                    
                     history_for_ai = []
                     for m in st.session_state.chat_history:
                         role = "model" if m["role"]=="assistant" else "user"
                         history_for_ai.append({"role": role, "parts": [m["content"]]})
                     
-                    # Gọi AI
-                    model = genai.GenerativeModel("models/gemini-1.5-flash", system_instruction=TAIMS_INSTRUCTION)
+                    model = genai.GenerativeModel(model_name, system_instruction=TAIMS_INSTRUCTION)
                     chat = model.start_chat(history=history_for_ai)
                     response = chat.send_message(prompt)
                     reply = response.text
                     
                     st.markdown(reply)
-                    
-                    # Lưu AI & Rerun
                     st.session_state.chat_history.append({"role": "assistant", "content": reply})
                     save_message(uid, st.session_state.current_session_id, "assistant", reply)
-                    st.rerun() # <--- CHỈ RERUN KHI THÀNH CÔNG
-
+                    st.rerun()
                 except Exception as e:
-                    # NẾU LỖI: IN RA MÀN HÌNH VÀ KHÔNG RERUN
-                    st.error(f"❌ Lỗi AI: {e}")
-                    
-                    # Bắt lỗi Index cụ thể ở đây
-                    if "requires an index" in str(e):
-                        st.warning("⚠️ Firebase cần tạo Index để AI đọc được lịch sử!")
-                        try:
-                            link = str(e).split("https://")[1].split(" ")[0]
-                            st.link_button("👉 Bấm vào đây tạo Index ngay", f"https://{link}")
-                        except: pass
+                    st.error(f"❌ Lỗi: {e}")
