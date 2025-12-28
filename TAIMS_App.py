@@ -15,26 +15,26 @@ from firebase_admin import credentials, firestore
 # --- 1. CẤU HÌNH ---
 st.set_page_config(page_title="TAIMS", page_icon="🎯", layout="wide")
 
-# --- 2. NÃO BỘ CHUYÊN GIA LẬP KẾ HOẠCH ---
+# --- 2. CẤU HÌNH NHÂN CÁCH AI ---
 TAIMS_INSTRUCTION = """
 IDENTITY:
-Bạn là TAIMS - Chuyên gia tối ưu hóa hiệu suất và lập lịch trình (Scheduler).
+Bạn là TAIMS - Chuyên gia tối ưu hóa hiệu suất và Xử lý dữ liệu (Data Processor).
 
 NHIỆM VỤ:
-1. Tạo TO-DO LIST chi tiết: Chia nhỏ việc cần làm.
-2. Lập LỊCH TRÌNH 7 NGÀY (Weekly Plan): Phân bổ thời gian hợp lý cho học tập/công việc.
+1.  **Lập kế hoạch:** Biến mục tiêu thành hành động.
+2.  **Xử lý Thời Khóa Biểu:** Nếu người dùng gửi một đoạn văn bản copy từ web trường học (rất lộn xộn), hãy phân tích và sắp xếp nó lại thành bảng rõ ràng.
 
 QUY TẮC TRẢ LỜI:
-- Luôn dùng định dạng Markdown.
-- Với danh sách việc cần làm, hãy dùng gạch đầu dòng "- [ ] Công việc...".
-- Với lịch trình, hãy trình bày rõ ràng từng ngày (Thứ 2, Thứ 3...).
-- Giọng văn: Thực tế, ngắn gọn, thúc giục hành động.
+-   Nếu là dữ liệu lịch học: Hãy kẻ bảng Markdown (Thứ | Tiết | Môn | Phòng | GV).
+-   Nếu là kế hoạch thường: Dùng gạch đầu dòng.
+-   Luôn ngắn gọn, tập trung.
 
-VÍ DỤ OUTPUT MONG MUỐN:
-"Đây là lịch trình tuần này cho bạn:
-- [ ] Thứ 2: Học Từ vựng (2h) - Sáng
-- [ ] Thứ 3: Luyện nghe IELTS (1h) - Chiều
-..."
+VÍ DỤ XỬ LÝ LỊCH HỌC:
+Input: "Pháp luật đại cương 2 tín chỉ Thứ 7 tiết 8-9 phòng F303"
+Output:
+| Thứ | Tiết | Môn Học | Phòng | Giảng Viên |
+|---|---|---|---|---|
+| 7 | 8-9 | Pháp luật đại cương | F303 | ... |
 """
 
 # --- 3. LOAD KEYS ---
@@ -48,7 +48,6 @@ def get_secret(key_name):
 
 if not api_key: api_key = get_secret("GEMINI_API_KEY")
 if not web_api_key: web_api_key = get_secret("FIREBASE_WEB_API_KEY")
-
 if not api_key: st.error("❌ Thiếu Gemini API Key"); st.stop()
 
 try: genai.configure(api_key=api_key)
@@ -76,7 +75,67 @@ def init_connection():
 
 db = init_connection()
 
-# --- 5. DATA LOGIC & EXCEL ENGINE ---
+# --- 5. HÀM EXCEL THÔNG MINH (ĐÃ NÂNG CẤP CHO SINH VIÊN) ---
+def generate_excel_from_text(text):
+    """
+    AI phụ trách việc chuyển đổi văn bản hỗn độn thành Excel chuẩn.
+    Đã tối ưu cho Thời Khóa Biểu Đại Học.
+    """
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Prompt này cực quan trọng: Dạy AI cách nhặt hạt sạn ra khỏi gạo
+        prompt = f"""
+        Bạn là một công cụ chuyển đổi dữ liệu (Data Parser).
+        Nhiệm vụ: Phân tích đoạn văn bản lộn xộn dưới đây và trích xuất thành danh sách JSON phẳng để làm Excel.
+        
+        Văn bản đầu vào: 
+        {text}
+        
+        YÊU CẦU:
+        1. Nếu đây là Thời Khóa Biểu (có Thứ, Tiết, Môn, Phòng...):
+           - Hãy chuẩn hóa cột: "Thứ", "Tiết", "Môn Học", "Phòng", "Giảng Viên", "Ghi Chú".
+           - Nếu một môn học có nhiều dòng (nhiều tuần), hãy gộp lại hoặc lấy thông tin quan trọng nhất (lịch học hằng tuần).
+        
+        2. Nếu đây là To-Do List thường:
+           - Cột: "Ngày", "Giờ", "Công Việc", "Trạng Thái".
+
+        OUTPUT MONG MUỐN (Chỉ trả về JSON list, không markdown):
+        [
+            {{"Thứ": "7", "Tiết": "8-9", "Môn Học": "Pháp luật đại cương", "Phòng": "F303(LD)", "Giảng Viên": "Lê Thị Phương Trang"}},
+            ...
+        ]
+        """
+        response = model.generate_content(prompt)
+        # Làm sạch chuỗi JSON (đôi khi AI thêm ```json vào đầu)
+        json_str = response.text.strip()
+        if "```json" in json_str:
+            json_str = json_str.split("```json")[1].split("```")[0]
+        elif "```" in json_str:
+            json_str = json_str.replace("```", "")
+            
+        data = json.loads(json_str)
+        df = pd.DataFrame(data)
+        
+        # Tạo file Excel
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            sheet_name = 'Thoi_Khoa_Bieu'
+            df.to_excel(writer, index=False, sheet_name=sheet_name)
+            
+            # Làm đẹp cột (Auto-fit columns)
+            worksheet = writer.sheets[sheet_name]
+            for i, col in enumerate(df.columns):
+                max_len = max(
+                    df[col].astype(str).map(len).max(),
+                    len(str(col))
+                ) + 2
+                worksheet.set_column(i, i, max_len)
+                
+        return output.getvalue()
+    except Exception as e:
+        return None
+
+# --- 6. LOGIC DỮ LIỆU ---
 def save_message(uid, session_id, role, content):
     if not db: return
     try:
@@ -95,7 +154,7 @@ def load_user_sessions(uid):
     try:
         docs = db.collection("sessions").where("uid", "==", uid).order_by("last_updated", direction=firestore.Query.DESCENDING).stream()
         return [{"id": doc.id, **doc.to_dict()} for doc in docs]
-    except: return [] # Bỏ qua lỗi index để UI sạch sẽ
+    except: return []
 
 def load_chat_history(session_id):
     if not db: return []
@@ -104,44 +163,7 @@ def load_chat_history(session_id):
         return [{"role": doc.to_dict()["role"], "content": doc.to_dict()["content"]} for doc in docs]
     except: return []
 
-# --- HÀM TẠO EXCEL TỪ TEXT AI ---
-def generate_excel_from_text(text):
-    """Dùng một AI phụ để chuyển văn bản thành JSON rồi sang Excel"""
-    try:
-        # Gọi Gemini lần 2 để ép kiểu dữ liệu sang JSON (cho máy đọc)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"""
-        Trích xuất lịch trình hoặc danh sách công việc từ văn bản sau thành định dạng JSON.
-        Văn bản: {text}
-        
-        Output mong muốn (JSON list):
-        [
-            {{"Ngày": "Thứ 2", "Giờ": "Sáng", "Công_Việc": "Học bài", "Trạng_Thái": "Chưa xong"}},
-            ...
-        ]
-        Chỉ trả về JSON thuần, không có markdown.
-        """
-        response = model.generate_content(prompt)
-        json_str = response.text.strip().replace("```json", "").replace("```", "")
-        
-        data = json.loads(json_str)
-        df = pd.DataFrame(data)
-        
-        # Tạo file Excel trong bộ nhớ
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=False, sheet_name='Lich_Trinh_TAIMS')
-            # Auto-adjust columns width (làm đẹp cột)
-            worksheet = writer.sheets['Lich_Trinh_TAIMS']
-            for i, col in enumerate(df.columns):
-                column_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
-                worksheet.set_column(i, i, column_len)
-                
-        return output.getvalue()
-    except Exception as e:
-        return None
-
-# --- 6. AUTH ---
+# --- 7. AUTH ---
 def sign_in(email, password):
     try:
         url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={web_api_key}"
@@ -154,7 +176,6 @@ def sign_up(email, password):
         return requests.post(url, json={"email": email, "password": password, "returnSecureToken": True}).json()
     except: return {"error": "Lỗi kết nối"}
 
-# --- 7. AI SAFETY ---
 def call_gemini_safe(history, user_input):
     models_to_try = ["gemini-1.5-flash", "gemini-pro"]
     for model_name in models_to_try:
@@ -164,7 +185,7 @@ def call_gemini_safe(history, user_input):
             response = chat.send_message(user_input)
             return response.text
         except: continue
-    return "TAIMS đang quá tải, hãy thử lại sau giây lát."
+    return "Lỗi kết nối AI."
 
 # --- 8. GIAO DIỆN ---
 if "user_info" not in st.session_state: st.session_state.user_info = None
@@ -172,11 +193,10 @@ if "current_session_id" not in st.session_state: st.session_state.current_sessio
 if "chat_history" not in st.session_state: st.session_state.chat_history = []
 
 if not st.session_state.user_info:
-    # LOGIN
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
         st.title("TAIMS 🎯")
-        st.caption("Quản lý thời gian - Tối ưu hiệu suất.")
+        st.caption("Sinh viên năm cuối & Du học Master.")
         tab1, tab2 = st.tabs(["Đăng Nhập", "Đăng Ký"])
         with tab1:
             e = st.text_input("Email", key="le"); p = st.text_input("Pass", type="password", key="lp")
@@ -191,14 +211,11 @@ if not st.session_state.user_info:
                 if "localId" in resp: st.session_state.user_info = {"uid": resp["localId"], "email": resp["email"]}; st.success("OK"); st.rerun()
                 else: st.error("Lỗi đăng ký")
 else:
-    # MAIN APP
     uid = st.session_state.user_info["uid"]
-    
     with st.sidebar:
-        if st.button("➕ Kế Hoạch Mới"): st.session_state.current_session_id = str(uuid.uuid4()); st.session_state.chat_history = []; st.rerun()
+        if st.button("➕ Chat Mới"): st.session_state.current_session_id = str(uuid.uuid4()); st.session_state.chat_history = []; st.rerun()
         st.divider()
-        sessions = load_user_sessions(uid)
-        for s in sessions:
+        for s in load_user_sessions(uid):
             if st.button(f"📅 {s.get('title','...')}", key=s['id']): 
                 st.session_state.current_session_id = s['id']
                 st.session_state.chat_history = load_chat_history(s['id'])
@@ -211,57 +228,44 @@ else:
     if not st.session_state.chat_history and db:
         st.session_state.chat_history = load_chat_history(st.session_state.current_session_id)
 
-    # --- HIỂN THỊ CHAT ---
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             
-            # TÍNH NĂNG ĐẶC BIỆT: NẾU LÀ AI VÀ CÓ CHỨA DANH SÁCH VIỆC
+            # --- TÍNH NĂNG TẢI EXCEL ---
             if msg["role"] == "assistant":
-                # 1. Tạo File Excel
-                if "thứ" in msg["content"].lower() or "day" in msg["content"].lower():
-                    # Dùng key duy nhất dựa trên độ dài content để tránh trùng
+                # Nút download sẽ hiện ra khi AI phát hiện dữ liệu dạng bảng hoặc danh sách
+                if "thứ" in msg["content"].lower() or "tiết" in msg["content"].lower() or "ngày" in msg["content"].lower():
                     xl_key = f"xl_{hash(msg['content'])}"
-                    if st.button("📥 Tải lịch trình này (Excel)", key=xl_key):
-                        with st.spinner("Đang tạo file Excel..."):
+                    if st.button("📥 Xuất file Excel", key=xl_key):
+                        with st.spinner("Đang xử lý dữ liệu hỗn độn..."):
                             excel_data = generate_excel_from_text(msg["content"])
                             if excel_data:
                                 st.download_button(
-                                    label="👉 Bấm để tải xuống ngay",
+                                    label="👉 Tải về TKB.xlsx",
                                     data=excel_data,
-                                    file_name="Lich_Trinh_TAIMS.xlsx",
+                                    file_name="Thoi_Khoa_Bieu_TAIMS.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                     key=f"dl_{xl_key}"
                                 )
                 
-                # 2. Trích xuất Checkbox (To-Do List tương tác)
-                # Tìm các dòng bắt đầu bằng - [ ] hoặc * [ ] hoặc - 
                 tasks = re.findall(r'[-*]\s+(.*)', msg["content"])
                 if tasks and len(tasks) > 2:
-                    with st.expander("✅ To-Do List tương tác"):
-                        for i, task in enumerate(tasks):
-                            st.checkbox(task, key=f"chk_{hash(msg['content'])}_{i}")
+                    with st.expander("✅ Checklist nhanh"):
+                        for i, task in enumerate(tasks): st.checkbox(task, key=f"c_{hash(msg['content'])}_{i}")
 
-    # --- INPUT ---
-    if prompt := st.chat_input("VD: Lập lịch học IELTS trong 1 tuần..."):
+    if prompt := st.chat_input("Dán thời khóa biểu vào đây..."):
         st.session_state.chat_history.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
         save_message(uid, st.session_state.current_session_id, "user", prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner("TAIMS đang thiết kế..."):
+            with st.spinner("TAIMS đang đọc lịch..."):
                 try:
-                    history_for_ai = []
-                    for m in st.session_state.chat_history:
-                        role = "model" if m["role"]=="assistant" else "user"
-                        history_for_ai.append({"role": role, "parts": [m["content"]]})
-                    
-                    reply = call_gemini_safe(history_for_ai, prompt)
-                    
+                    gh = [{"role": "model" if m["role"]=="assistant" else "user", "parts": [m["content"]]} for m in st.session_state.chat_history]
+                    reply = call_gemini_safe(gh, prompt)
                     st.markdown(reply)
                     st.session_state.chat_history.append({"role": "assistant", "content": reply})
                     save_message(uid, st.session_state.current_session_id, "assistant", reply)
-                    time.sleep(0.5)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Lỗi: {e}")
+                    time.sleep(0.5); st.rerun()
+                except Exception as e: st.error(f"Lỗi: {e}")
