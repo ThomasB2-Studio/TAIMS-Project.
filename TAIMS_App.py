@@ -15,26 +15,19 @@ from firebase_admin import credentials, firestore
 # --- 1. CẤU HÌNH TRANG ---
 st.set_page_config(page_title="TAIMS", page_icon="🎯", layout="wide")
 
-# --- 2. CẤU HÌNH NHÂN CÁCH AI (BẢN CHI TIẾT CẬU THÍCH) ---
+# --- 2. NHÂN CÁCH AI ---
 TAIMS_INSTRUCTION = """
 IDENTITY:
 Bạn là TAIMS - Chuyên gia tối ưu hóa hiệu suất và Xử lý dữ liệu (Data Processor).
 
 NHIỆM VỤ:
-1.  **Lập kế hoạch:** Biến mục tiêu thành hành động.
-2.  **Xử lý Thời Khóa Biểu:** Nếu người dùng gửi một đoạn văn bản copy từ web trường học (rất lộn xộn), hãy phân tích và sắp xếp nó lại thành bảng rõ ràng.
+1. Lập kế hoạch: Biến mục tiêu thành hành động.
+2. Xử lý Thời Khóa Biểu: Nếu người dùng gửi text lộn xộn, hãy phân tích thành bảng rõ ràng.
 
-QUY TẮC TRẢ LỜI:
--   Nếu là dữ liệu lịch học: Hãy kẻ bảng Markdown (Thứ | Tiết | Môn | Phòng | GV).
--   Nếu là kế hoạch thường: Dùng gạch đầu dòng.
--   Luôn ngắn gọn, tập trung.
-
-VÍ DỤ XỬ LÝ LỊCH HỌC:
-Input: "Pháp luật đại cương 2 tín chỉ Thứ 7 tiết 8-9 phòng F303"
-Output:
-| Thứ | Tiết | Môn Học | Phòng | Giảng Viên |
-|---|---|---|---|---|
-| 7 | 8-9 | Pháp luật đại cương | F303 | ... |
+QUY TẮC:
+- Dữ liệu lịch học: Kẻ bảng Markdown (Thứ | Tiết | Môn | Phòng | GV).
+- Kế hoạch: Dùng gạch đầu dòng.
+- Ngắn gọn, tập trung.
 """
 
 # --- 3. XỬ LÝ API KEYS ---
@@ -50,11 +43,14 @@ if not api_key: api_key = get_secret("GEMINI_API_KEY")
 if not web_api_key: web_api_key = get_secret("FIREBASE_WEB_API_KEY")
 
 if not api_key:
-    st.error("❌ Thiếu Gemini API Key. Vui lòng kiểm tra file .env hoặc Secrets.")
+    st.error("❌ Thiếu Gemini API Key. Kiểm tra file .env hoặc Secrets.")
     st.stop()
 
-try: genai.configure(api_key=api_key)
-except Exception as e: st.error(f"Lỗi cấu hình Gemini: {e}")
+# Cấu hình Gemini
+try:
+    genai.configure(api_key=api_key)
+except Exception as e:
+    st.error(f"Lỗi cấu hình Key: {e}")
 
 # --- 4. KẾT NỐI DATABASE ---
 @st.cache_resource
@@ -72,13 +68,13 @@ def init_connection():
                 cred = credentials.Certificate(key_dict)
                 firebase_admin.initialize_app(cred)
                 return firestore.client()
-        except Exception: return None
+        except: return None
         return None
-    except Exception: return None
+    except: return None
 
 db = init_connection()
 
-# --- 5. CÁC HÀM XỬ LÝ DATABASE ---
+# --- 5. HÀM XỬ LÝ DB ---
 def save_message(uid, session_id, role, content):
     if not db: return
     try:
@@ -90,7 +86,7 @@ def save_message(uid, session_id, role, content):
             db.collection("sessions").document(session_id).set({
                 "uid": uid, "session_id": session_id, "title": title, "last_updated": firestore.SERVER_TIMESTAMP
             }, merge=True)
-    except Exception as e: print(f"Lỗi lưu DB: {e}")
+    except: pass
 
 def load_user_sessions(uid):
     if not db: return []
@@ -99,7 +95,7 @@ def load_user_sessions(uid):
         return [{"id": doc.id, **doc.to_dict()} for doc in docs]
     except Exception as e:
         if "requires an index" in str(e):
-            st.sidebar.warning("⚠️ Đang tạo Index... Vui lòng chờ.")
+            st.sidebar.error("⚠️ Cần tạo Index (Sessions)!")
         return []
 
 def load_chat_history(session_id):
@@ -107,7 +103,10 @@ def load_chat_history(session_id):
     try:
         docs = db.collection("chat_logs").where("session_id", "==", session_id).order_by("timestamp", direction=firestore.Query.ASCENDING).stream()
         return [{"role": doc.to_dict()["role"], "content": doc.to_dict()["content"]} for doc in docs]
-    except Exception: return []
+    except Exception as e:
+        if "requires an index" in str(e):
+            st.error("⚠️ Cần tạo Index (Chat Logs)!")
+        return []
 
 def delete_session_from_db(session_id):
     if not db: return
@@ -116,30 +115,20 @@ def delete_session_from_db(session_id):
         logs = db.collection("chat_logs").where("session_id", "==", session_id).stream()
         for log in logs: log.reference.delete()
         return True
-    except Exception as e: st.error(f"Lỗi xóa: {e}"); return False
+    except: return False
 
-# --- 6. HÀM EXCEL (PHIÊN BẢN ĐẠI HỌC - XlsxWriter) ---
+# --- 6. HÀM EXCEL (ENGINE: OPENPYXL - AN TOÀN NHẤT) ---
 def generate_excel_from_text(text):
-    """
-    Dùng AI phụ để trích xuất dữ liệu, đặc biệt tối ưu cho text TKB lộn xộn.
-    """
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = f"""
-        Bạn là Data Processor. Nhiệm vụ: Biến đoạn văn bản lộn xộn sau thành JSON list chuẩn xác.
-        VĂN BẢN ĐẦU VÀO: 
-        {text[:4000]}
-        
-        YÊU CẦU XỬ LÝ:
-        1. ƯU TIÊN 1: Nếu là Thời Khóa Biểu Đại Học (có STT, Tín chỉ, Thứ, Tiết...):
-           - Trích xuất các cột "Thứ", "Tiết", "Môn Học", "Phòng", "Giảng Viên".
-           - Hãy lọc bỏ các thông tin rác, chỉ giữ lại thông tin lịch học.
-        2. ƯU TIÊN 2: Nếu là To-Do List thường: Cột "Ngày", "Giờ", "Công Việc", "Trạng Thái".
-
-        OUTPUT FORMAT: Chỉ trả về chuỗi JSON thuần (List of Objects). KHÔNG dùng Markdown.
+        Trích xuất dữ liệu từ văn bản sau thành JSON list.
+        Text: {text[:4000]}
+        Yêu cầu:
+        - TKB Đại học: [Thứ, Tiết, Môn Học, Phòng, Giảng Viên]
+        - To-Do List: [Ngày, Giờ, Công Việc, Trạng Thái]
+        CHỈ TRẢ VỀ JSON THUẦN (List of Objects). KHÔNG MARKDOWN.
         """
         response = model.generate_content(prompt)
-        
-        # Làm sạch JSON
         json_str = response.text.strip()
         if "
