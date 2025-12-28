@@ -3,6 +3,7 @@ import os
 import json
 import requests
 import uuid
+import time
 from dotenv import load_dotenv
 import google.generativeai as genai
 import firebase_admin
@@ -110,19 +111,31 @@ def sign_up(email, password):
         return requests.post(url, json={"email": email, "password": password, "returnSecureToken": True}).json()
     except: return {"error": "Lỗi kết nối"}
 
-# --- 6. HÀM TÌM MODEL TỰ ĐỘNG (FIX LỖI 404) ---
-def get_best_model():
-    """Tự động tìm model tốt nhất có sẵn"""
-    try:
-        # Lấy danh sách model mà Google cho phép dùng
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                # Ưu tiên Flash nếu có
-                if 'flash' in m.name: return m.name
-        # Nếu không có Flash, lấy đại cái đầu tiên
-        return "gemini-pro"
-    except:
-        return "gemini-pro" # Fallback cuối cùng
+# --- 6. HÀM GỌI AI BẤT TỬ (RETRY LOGIC) ---
+def call_gemini_safe(history, user_input):
+    # Danh sách các tên model để thử lần lượt
+    models_to_try = [
+        "gemini-1.5-flash", 
+        "gemini-pro", 
+        "gemini-1.0-pro",
+        "models/gemini-1.5-flash",
+        "models/gemini-pro"
+    ]
+    
+    last_error = None
+    
+    for model_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(model_name, system_instruction=TAIMS_INSTRUCTION)
+            chat = model.start_chat(history=history)
+            response = chat.send_message(user_input)
+            return response.text # Nếu thành công thì trả về ngay
+        except Exception as e:
+            last_error = e
+            continue # Nếu lỗi thì thử cái tiếp theo trong danh sách
+            
+    # Nếu thử hết mà vẫn lỗi thì ném lỗi ra ngoài
+    raise last_error
 
 # --- 7. GIAO DIỆN ---
 if "user_info" not in st.session_state: st.session_state.user_info = None
@@ -130,7 +143,7 @@ if "current_session_id" not in st.session_state: st.session_state.current_sessio
 if "chat_history" not in st.session_state: st.session_state.chat_history = []
 
 if not st.session_state.user_info:
-    # LOGIN SCREEN
+    # LOGIN
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
         st.title("TAIMS 🎯")
@@ -148,7 +161,7 @@ if not st.session_state.user_info:
                 if "localId" in resp: st.session_state.user_info = {"uid": resp["localId"], "email": resp["email"]}; st.success("OK"); st.rerun()
                 else: st.error("Lỗi đăng ký")
 else:
-    # MAIN APP
+    # MAIN
     uid = st.session_state.user_info["uid"]
     
     with st.sidebar:
@@ -179,22 +192,27 @@ else:
         with st.chat_message("assistant"):
             with st.spinner("..."):
                 try:
-                    # FIX: Tự động tìm model
-                    model_name = get_best_model()
-                    
+                    # Chuẩn bị context
                     history_for_ai = []
                     for m in st.session_state.chat_history:
                         role = "model" if m["role"]=="assistant" else "user"
                         history_for_ai.append({"role": role, "parts": [m["content"]]})
                     
-                    model = genai.GenerativeModel(model_name, system_instruction=TAIMS_INSTRUCTION)
-                    chat = model.start_chat(history=history_for_ai)
-                    response = chat.send_message(prompt)
-                    reply = response.text
+                    # GỌI HÀM BẤT TỬ ĐỂ TÌM MODEL
+                    reply = call_gemini_safe(history_for_ai, prompt)
                     
                     st.markdown(reply)
                     st.session_state.chat_history.append({"role": "assistant", "content": reply})
                     save_message(uid, st.session_state.current_session_id, "assistant", reply)
+                    
+                    # Chỉ Rerun khi thành công
+                    time.sleep(0.5) 
                     st.rerun()
                 except Exception as e:
-                    st.error(f"❌ Lỗi: {e}")
+                    st.error(f"❌ AI không phản hồi: {e}")
+                    if "index" in str(e).lower():
+                        st.warning("⚠️ Thiếu Index cho AI!")
+                        try:
+                            link = str(e).split("https://")[1].split(" ")[0]
+                            st.link_button("👉 Bấm để tạo Index 2", f"https://{link}")
+                        except: pass
