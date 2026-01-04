@@ -7,15 +7,19 @@ import time
 import pandas as pd
 import io
 import re
+import random  # <--- THÊM: Để random câu nói đanh đá
+from datetime import datetime # <--- THÊM: Để xử lý ngày giờ
 from dotenv import load_dotenv
 import google.generativeai as genai
 import firebase_admin
 from firebase_admin import credentials, firestore
+from ics import Calendar, Event # <--- THÊM: Thư viện tạo lịch
 
 # --- 1. CẤU HÌNH ---
 st.set_page_config(page_title="TAIMS", page_icon="🎯", layout="wide")
 
-TAIMS_INSTRUCTION = TAIMS_INSTRUCTION = """
+# (Đã sửa lỗi lặp biến ở đây)
+TAIMS_INSTRUCTION = """
 IDENTITY:
 Bạn là TAIMS - Chuyên gia tối ưu hóa hiệu suất và Xử lý dữ liệu (Data Processor).
 
@@ -23,22 +27,27 @@ NHIỆM VỤ:
 1. Lập kế hoạch: Biến mục tiêu thành hành động.
 2. Xử lý Thời Khóa Biểu: Nếu người dùng gửi text lộn xộn, hãy phân tích và sắp xếp nó lại thành bảng rõ ràng.
 
-QUY TẮC:
-- Dữ liệu lịch học: Kẻ bảng Markdown (Thứ | Tiết | Môn | Phòng | GV).
-- Kế hoạch: Dùng gạch đầu dòng.
-- Ngắn gọn, tập trung.
+QUY TẮC TRẢ LỜI:
+- Nếu là dữ liệu lịch học: Hãy kẻ bảng Markdown (Thứ | Tiết | Môn | Phòng | GV).
+- Nếu là kế hoạch thường: Dùng gạch đầu dòng.
+- Luôn ngắn gọn, tập trung.
+
+VÍ DỤ XỬ LÝ LỊCH HỌC:
+Input: "Pháp luật đại cương 2 tín chỉ Thứ 7 tiết 8-9 phòng F303"
+Output:
+| Thứ | Tiết | Môn Học | Phòng | Giảng Viên |
+|---|---|---|---|---|
+| 7 | 8-9 | Pháp luật đại cương | F303 | ... |
 """
 
 # --- 2. LOAD KEYS ---
 load_dotenv()
-
 
 def get_key(name):
     try:
         return st.secrets[name]
     except:
         return os.getenv(name)
-
 
 api_key = get_key("GEMINI_API_KEY")
 web_api_key = get_key("FIREBASE_WEB_API_KEY")
@@ -49,7 +58,6 @@ try:
     genai.configure(api_key=api_key)
 except:
     pass
-
 
 # --- 3. KẾT NỐI DB ---
 @st.cache_resource
@@ -69,9 +77,7 @@ def init_connection():
     except:
         return None
 
-
 db = init_connection()
-
 
 # --- 4. HÀM TỰ ĐỘNG TÌM MODEL (FIX 404) ---
 @st.cache_resource
@@ -95,7 +101,6 @@ def get_valid_model_name():
     except:
         return "models/gemini-pro"
 
-
 # --- 5. LOGIC DỮ LIỆU ---
 def save_message(uid, session_id, role, content):
     if not db: return
@@ -112,7 +117,6 @@ def save_message(uid, session_id, role, content):
     except:
         pass
 
-
 def delete_session_db(session_id):
     if not db: return
     try:
@@ -123,7 +127,6 @@ def delete_session_db(session_id):
     except:
         return False
 
-
 def load_user_sessions(uid):
     if not db: return []
     try:
@@ -133,7 +136,6 @@ def load_user_sessions(uid):
     except:
         return []
 
-
 def load_chat_history(session_id):
     if not db: return []
     try:
@@ -142,7 +144,6 @@ def load_chat_history(session_id):
         return [{"role": doc.to_dict()["role"], "content": doc.to_dict()["content"]} for doc in docs]
     except:
         return []
-
 
 # --- 6. EXCEL LOGIC ---
 def create_excel(text):
@@ -162,6 +163,51 @@ def create_excel(text):
     except:
         return None
 
+# --- 6.5. CALENDAR LOGIC (THÊM MỚI - KHÔNG XÓA CŨ) ---
+def create_ics_file(text):
+    """Tạo file lịch với thông báo đanh đá"""
+    try:
+        # Gọi AI để lấy dữ liệu JSON trước
+        model_name = get_valid_model_name()
+        model = genai.GenerativeModel(model_name)
+        prompt = f"""
+        Extract schedule data from text into JSON list.
+        Fields required: "Subject" (Môn/Việc), "Location" (Phòng/Nơi).
+        Output JSON ONLY. No markdown.
+        Text: {text[:3000]}
+        """
+        resp = model.generate_content(prompt)
+        json_str = resp.text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(json_str)
+        
+        c = Calendar()
+        
+        # --- DANH SÁCH CÂU NHẮC NHỞ "GẮT" ---
+        sassy_prefixes = [
+            "😇 Hình như anh chiều em quá nên em hư đúng không... Đi làm nhanhhhhh!!:",
+            "😩 Haizz tiểu cô nương hãy làm deadline đi ayza:",
+            "🆘 Cứu Cứu tôi khỏi đống deadline này điii !!!:",
+            "🔥 Ây daaa! Cháy mông rồi làm đi:",
+            "💀 Deadline dí kìa chạy ngay đi:",
+            "👀 Ôi bạn ơi! Đừng lười nữa:",
+            "⚡ Dậy đi ông cháu ơi:",
+            "🛑 STOP lướt web! Học ngay:"
+        ]
+        
+        for item in data:
+            e = Event()
+            subject = item.get('Subject', item.get('Môn Học', 'Việc cần làm'))
+            
+            # CHỌN RANDOM CÂU NHẮC NHỞ
+            prefix = random.choice(sassy_prefixes)
+            e.name = f"{prefix} {subject}" # Tiêu đề sẽ hiện lên thông báo điện thoại
+            
+            e.location = item.get('Location', item.get('Phòng', ''))
+            e.begin = datetime.now().strftime("%Y-%m-%d %H:%M:%S") # Giờ hiện tại (Demo)
+            c.events.add(e)
+
+        return c.serialize()
+    except: return None
 
 # --- 7. AUTH ---
 def auth_action(email, password, mode="signin"):
@@ -170,7 +216,6 @@ def auth_action(email, password, mode="signin"):
         return requests.post(url, json={"email": email, "password": password, "returnSecureToken": True}).json()
     except Exception as e:
         return {"error": str(e)}
-
 
 # --- 8. UI ---
 if "user_info" not in st.session_state: st.session_state.user_info = None
@@ -247,11 +292,21 @@ else:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg["role"] == "assistant":
-                if "thứ" in msg["content"].lower() or "ngày" in msg["content"].lower():
+                if "thứ" in msg["content"].lower() or "ngày" in msg["content"].lower() or "tiết" in msg["content"].lower():
                     k = f"xl_{hash(msg['content'])}"
-                    if st.button("📥 Xuất Excel", key=k):
-                        d = create_excel(msg["content"])
-                        if d: st.download_button("Tải về", d, "TAIMS.xlsx", key=f"d_{k}")
+                    
+                    # --- GIAO DIỆN NÚT BẤM MỚI (EXCEL + CALENDAR) ---
+                    col_dl1, col_dl2 = st.columns(2)
+                    with col_dl1:
+                        if st.button("📥 Xuất Excel", key=f"x_{k}", use_container_width=True):
+                            d = create_excel(msg["content"])
+                            if d: st.download_button("Tải Excel", d, "TAIMS.xlsx", key=f"dx_{k}")
+                    
+                    with col_dl2:
+                        if st.button("📅 Thêm vào Lịch", key=f"c_{k}", use_container_width=True):
+                            c_data = create_ics_file(msg["content"])
+                            if c_data: st.download_button("Tải Lịch (.ics)", c_data, "schedule.ics", "text/calendar", key=f"dc_{k}")
+                            else: st.error("Lỗi tạo lịch.")
 
     if prompt := st.chat_input("Nhập yêu cầu..."):
         st.session_state.chat_history.append({"role": "user", "content": prompt})
