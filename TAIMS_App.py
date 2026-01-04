@@ -7,18 +7,18 @@ import time
 import pandas as pd
 import io
 import re
-import random  # <--- THÊM: Để random câu nói đanh đá
-from datetime import datetime # <--- THÊM: Để xử lý ngày giờ
+import random  # Để random câu nói đanh đá
+from datetime import datetime # Để xử lý ngày giờ
 from dotenv import load_dotenv
 import google.generativeai as genai
 import firebase_admin
 from firebase_admin import credentials, firestore
-from ics import Calendar, Event # <--- THÊM: Thư viện tạo lịch
+from ics import Calendar, Event # Thư viện tạo lịch
 
 # --- 1. CẤU HÌNH ---
 st.set_page_config(page_title="TAIMS", page_icon="🎯", layout="wide")
 
-# (Đã sửa lỗi lặp biến ở đây)
+# --- 2. CẤU HÌNH NHÂN CÁCH AI ---
 TAIMS_INSTRUCTION = """
 IDENTITY:
 Bạn là TAIMS - Chuyên gia tối ưu hóa hiệu suất và Xử lý dữ liệu (Data Processor).
@@ -40,7 +40,7 @@ Output:
 | 7 | 8-9 | Pháp luật đại cương | F303 | ... |
 """
 
-# --- 2. LOAD KEYS ---
+# --- 3. LOAD KEYS ---
 load_dotenv()
 
 def get_key(name):
@@ -163,7 +163,7 @@ def create_excel(text):
     except:
         return None
 
-# --- 6.5. CALENDAR LOGIC (THÊM MỚI - KHÔNG XÓA CŨ) ---
+# --- 6.5. CALENDAR LOGIC (SASSY EDITION) ---
 def create_ics_file(text):
     """Tạo file lịch với thông báo đanh đá"""
     try:
@@ -182,15 +182,17 @@ def create_ics_file(text):
         
         c = Calendar()
         
-        # --- DANH SÁCH CÂU NHẮC NHỞ "GẮT" ---
+        # --- BỘ SƯU TẬP "SASSY" (CÀ KHỊA) ---
         sassy_prefixes = [
             "😇 Hình như anh chiều em quá nên em hư đúng không... Đi làm nhanhhhhh!!:",
             "😩 Haizz tiểu cô nương hãy làm deadline đi ayza:",
             "🆘 Cứu Cứu tôi khỏi đống deadline này điii !!!:",
+            "😲 Á á á!! Sắp tới giờ học rồi, vào lớp mau!!:",
             "🔥 Ây daaa! Cháy mông rồi làm đi:",
             "💀 Deadline dí kìa chạy ngay đi:",
             "👀 Ôi bạn ơi! Đừng lười nữa:",
             "⚡ Dậy đi ông cháu ơi:",
+            "😱 Bất ngờ chưa bà già! Deadline tới rồi:",
             "🛑 STOP lướt web! Học ngay:"
         ]
         
@@ -295,7 +297,7 @@ else:
                 if "thứ" in msg["content"].lower() or "ngày" in msg["content"].lower() or "tiết" in msg["content"].lower():
                     k = f"xl_{hash(msg['content'])}"
                     
-                    # --- GIAO DIỆN NÚT BẤM MỚI (EXCEL + CALENDAR) ---
+                    # --- GIAO DIỆN NÚT BẤM (EXCEL + CALENDAR) ---
                     col_dl1, col_dl2 = st.columns(2)
                     with col_dl1:
                         if st.button("📥 Xuất Excel", key=f"x_{k}", use_container_width=True):
@@ -308,7 +310,7 @@ else:
                             if c_data: st.download_button("Tải Lịch (.ics)", c_data, "schedule.ics", "text/calendar", key=f"dc_{k}")
                             else: st.error("Lỗi tạo lịch.")
 
-    if prompt := st.chat_input("Nhập yêu cầu..."):
+    if prompt := st.chat_input("Nhập yêu cầu hoặc dán TKB..."):
         st.session_state.chat_history.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -350,4 +352,4 @@ else:
                     if "429" in str(e):
                         st.warning("⚠️ Server quá tải. Vui lòng thử lại sau 10s.")
                     else:
-                        st.error(f"❌ Lỗi: {e}")
+                        st.error(f"Lỗi: {e}")
