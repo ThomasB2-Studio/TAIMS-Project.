@@ -7,18 +7,18 @@ import time
 import pandas as pd
 import io
 import re
-import random  # Để random câu nói đanh đá
-from datetime import datetime # Để xử lý ngày giờ
+import random  # <--- THÊM: Để random câu nói đanh đá
+from datetime import datetime # <--- THÊM: Để xử lý ngày giờ
 from dotenv import load_dotenv
 import google.generativeai as genai
 import firebase_admin
 from firebase_admin import credentials, firestore
-from ics import Calendar, Event # Thư viện tạo lịch
+from ics import Calendar, Event # <--- THÊM: Thư viện tạo lịch
 
 # --- 1. CẤU HÌNH ---
 st.set_page_config(page_title="TAIMS", page_icon="🎯", layout="wide")
 
-# --- 2. CẤU HÌNH NHÂN CÁCH AI ---
+# (Đã sửa lỗi lặp biến ở đây - Chỉ giữ lại 1 dấu bằng)
 TAIMS_INSTRUCTION = """
 IDENTITY:
 Bạn là TAIMS - Chuyên gia tối ưu hóa hiệu suất và Xử lý dữ liệu (Data Processor).
@@ -40,7 +40,7 @@ Output:
 | 7 | 8-9 | Pháp luật đại cương | F303 | ... |
 """
 
-# --- 3. LOAD KEYS ---
+# --- 2. LOAD KEYS ---
 load_dotenv()
 
 def get_key(name):
@@ -163,7 +163,7 @@ def create_excel(text):
     except:
         return None
 
-# --- 6.5. CALENDAR LOGIC (SASSY EDITION) ---
+# --- 6.5. CALENDAR LOGIC (THÊM MỚI - ĐÃ UPDATE SASSY) ---
 def create_ics_file(text):
     """Tạo file lịch với thông báo đanh đá"""
     try:
@@ -182,7 +182,7 @@ def create_ics_file(text):
         
         c = Calendar()
         
-        # --- BỘ SƯU TẬP "SASSY" (CÀ KHỊA) ---
+        # --- DANH SÁCH CÂU NHẮC NHỞ "GẮT" (ĐÃ CẬP NHẬT THEO Ý THOMAS) ---
         sassy_prefixes = [
             "😇 Hình như anh chiều em quá nên em hư đúng không... Đi làm nhanhhhhh!!:",
             "😩 Haizz tiểu cô nương hãy làm deadline đi ayza:",
@@ -192,7 +192,6 @@ def create_ics_file(text):
             "💀 Deadline dí kìa chạy ngay đi:",
             "👀 Ôi bạn ơi! Đừng lười nữa:",
             "⚡ Dậy đi ông cháu ơi:",
-            "😱 Bất ngờ chưa bà già! Deadline tới rồi:",
             "🛑 STOP lướt web! Học ngay:"
         ]
         
